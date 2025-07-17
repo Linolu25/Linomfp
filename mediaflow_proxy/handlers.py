@@ -76,22 +76,28 @@ async def handle_hls_stream_proxy(
     Returns:
         Union[Response, EnhancedStreamingResponse]: Either a processed m3u8 playlist or a streaming response.
     """
-    client, streamer = await setup_client_and_streamer()
+    _, streamer = await setup_client_and_streamer()
     # Handle range requests
     content_range = proxy_headers.request.get("range", "bytes=0-")
-    if "NaN" in content_range:
+    if "nan" in content_range.casefold():
         # Handle invalid range requests "bytes=NaN-NaN"
         raise HTTPException(status_code=416, detail="Invalid Range Header")
     proxy_headers.request.update({"range": content_range})
 
     try:
+        # If force_playlist_proxy is enabled, skip detection and directly process as m3u8
+        if hls_params.force_playlist_proxy:
+            return await fetch_and_process_m3u8(
+                streamer, hls_params.destination, proxy_headers, request, hls_params.key_url, hls_params.force_playlist_proxy
+            )
+
         parsed_url = urlparse(hls_params.destination)
         # Check if the URL is a valid m3u8 playlist or m3u file
         if parsed_url.path.endswith((".m3u", ".m3u8", ".m3u_plus")) or parse_qs(parsed_url.query).get("type", [""])[
             0
         ] in ["m3u", "m3u8", "m3u_plus"]:
             return await fetch_and_process_m3u8(
-                streamer, hls_params.destination, proxy_headers, request, hls_params.key_url
+                streamer, hls_params.destination, proxy_headers, request, hls_params.key_url, hls_params.force_playlist_proxy
             )
 
         # Create initial streaming response to check content type
@@ -100,7 +106,7 @@ async def handle_hls_stream_proxy(
 
         if "mpegurl" in response_headers.get("content-type", "").lower():
             return await fetch_and_process_m3u8(
-                streamer, hls_params.destination, proxy_headers, request, hls_params.key_url
+                streamer, hls_params.destination, proxy_headers, request, hls_params.key_url, hls_params.force_playlist_proxy
             )
 
         return EnhancedStreamingResponse(
@@ -190,7 +196,7 @@ async def proxy_stream(method: str, destination: str, proxy_headers: ProxyReques
 
 
 async def fetch_and_process_m3u8(
-    streamer: Streamer, url: str, proxy_headers: ProxyRequestHeaders, request: Request, key_url: str = None
+    streamer: Streamer, url: str, proxy_headers: ProxyRequestHeaders, request: Request, key_url: str = None, force_playlist_proxy: bool = None
 ):
     """
     Fetches and processes the m3u8 playlist on-the-fly, converting it to an HLS playlist.
@@ -201,6 +207,7 @@ async def fetch_and_process_m3u8(
         proxy_headers (ProxyRequestHeaders): The headers to include in the request.
         request (Request): The incoming HTTP request.
         key_url (str, optional): The HLS Key URL to replace the original key URL. Defaults to None.
+        force_playlist_proxy (bool, optional): Force all playlist URLs to be proxied through MediaFlow. Defaults to None.
 
     Returns:
         Response: The HTTP response with the processed m3u8 playlist.
@@ -211,11 +218,11 @@ async def fetch_and_process_m3u8(
             await streamer.create_streaming_response(url, proxy_headers.request)
 
         # Initialize processor and response headers
-        processor = M3U8Processor(request, key_url)
+        processor = M3U8Processor(request, key_url, force_playlist_proxy)
         response_headers = {
-            "Content-Disposition": "inline",
-            "Accept-Ranges": "none",
-            "Content-Type": "application/vnd.apple.mpegurl",
+            "content-disposition": "inline",
+            "accept-ranges": "none",
+            "content-type": "application/vnd.apple.mpegurl",
         }
         response_headers.update(proxy_headers.response)
 
